@@ -648,6 +648,10 @@ asmlinkage void __init start_kernel(void)
 
 	ftrace_init();
 
+#ifdef CONFIG_X86_64
+	init_espfix_cpu();
+#endif
+
 	/* Do the rest non-__init'ed, we're now alive */
 	rest_init();
 }

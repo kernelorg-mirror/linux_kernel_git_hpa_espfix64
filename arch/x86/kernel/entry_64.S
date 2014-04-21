@@ -58,6 +58,7 @@
 #include <asm/asm.h>
 #include <asm/context_tracking.h>
 #include <asm/smap.h>
+#include <asm/pgtable_types.h>
 #include <linux/err.h>
 
 /* Avoid __ASSEMBLER__'ifying <linux/audit.h> just for this.  */
@@ -1040,14 +1041,50 @@ restore_args:
 	RESTORE_ARGS 1,8,1
 
 irq_return:
+	/*
+	 * Are we returning to the LDT?  Note: in 64-bit mode
+	 * SS:RSP on the exception stack is always valid.
+	 */
+	testb $4,(SS-RIP)(%rsp)
+	jnz irq_return_ldt
+
+irq_return_iret:
 	INTERRUPT_RETURN
-	_ASM_EXTABLE(irq_return, bad_iret)
+	_ASM_EXTABLE(irq_return_iret, bad_iret)
 
 #ifdef CONFIG_PARAVIRT
 ENTRY(native_iret)
 	iretq
 	_ASM_EXTABLE(native_iret, bad_iret)
 #endif
+
+irq_return_ldt:
+	pushq_cfi %rcx
+	larl (CS-RIP+8)(%rsp), %ecx
+	jnz 1f		/* Invalid segment - will #GP at IRET time */
+	testl $0x00200000, %ecx
+	jnz 1f		/* Returning to 64-bit mode */
+	larl (SS-RIP+8)(%rsp), %ecx
+	jnz 1f		/* Invalid segment - will #SS at IRET time */
+	testl $0x00400000, %ecx
+	jnz 1f		/* Not a 16-bit stack segment */
+	pushq_cfi %rsi
+	pushq_cfi %rdi
+	SWAPGS
+	movq PER_CPU_VAR(espfix_stack),%rdi
+	movl (RSP-RIP+3*8)(%rsp),%esi
+	xorw %si,%si
+	orq %rsi,%rdi
+	movq %rsp,%rsi
+	movl $8,%ecx
+	rep;movsq
+	leaq -(8*8)(%rdi),%rsp
+	SWAPGS
+	popq_cfi %rdi
+	popq_cfi %rsi
+1:
+	popq_cfi %rcx
+	jmp irq_return_iret
 
 	.section .fixup,"ax"
 bad_iret:
@@ -1058,6 +1095,7 @@ bad_iret:
 	 * So pretend we completed the iret and took the #GPF in user mode.
 	 *
 	 * We are now running with the kernel GS after exception recovery.
+	 * Exception entry will have removed us from the espfix stack.
 	 * But error_entry expects us to have user GS to match the user %cs,
 	 * so swap back.
 	 */
@@ -1200,6 +1238,17 @@ apicinterrupt IRQ_WORK_VECTOR \
 	irq_work_interrupt smp_irq_work_interrupt
 #endif
 
+.macro espfix_adjust_stack
+	pushq_cfi %rdi
+	movq %rsp,%rdi
+	sarq $PGDIR_SHIFT,%rdi
+	cmpl $-2,%edi
+	jne 1f
+	call espfix_fix_stack
+1:
+	popq_cfi %rdi		/* Fix so we don't need this again */
+.endm
+
 /*
  * Exception entry points.
  */
@@ -1209,6 +1258,7 @@ ENTRY(\sym)
 	ASM_CLAC
 	PARAVIRT_ADJUST_EXCEPTION_FRAME
 	pushq_cfi $-1		/* ORIG_RAX: no syscall to restart */
+	espfix_adjust_stack
 	subq $ORIG_RAX-R15, %rsp
 	CFI_ADJUST_CFA_OFFSET ORIG_RAX-R15
 	call error_entry
@@ -1227,6 +1277,7 @@ ENTRY(\sym)
 	ASM_CLAC
 	PARAVIRT_ADJUST_EXCEPTION_FRAME
 	pushq_cfi $-1		/* ORIG_RAX: no syscall to restart */
+	espfix_adjust_stack
 	subq $ORIG_RAX-R15, %rsp
 	CFI_ADJUST_CFA_OFFSET ORIG_RAX-R15
 	call save_paranoid
@@ -1265,6 +1316,7 @@ ENTRY(\sym)
 	XCPT_FRAME
 	ASM_CLAC
 	PARAVIRT_ADJUST_EXCEPTION_FRAME
+	espfix_adjust_stack
 	subq $ORIG_RAX-R15, %rsp
 	CFI_ADJUST_CFA_OFFSET ORIG_RAX-R15
 	call error_entry
@@ -1295,6 +1347,7 @@ ENTRY(\sym)
 	XCPT_FRAME
 	ASM_CLAC
 	PARAVIRT_ADJUST_EXCEPTION_FRAME
+	espfix_adjust_stack
 	subq $ORIG_RAX-R15, %rsp
 	CFI_ADJUST_CFA_OFFSET ORIG_RAX-R15
 	call save_paranoid
@@ -1323,6 +1376,30 @@ zeroentry coprocessor_error do_coprocessor_error
 errorentry alignment_check do_alignment_check
 zeroentry simd_coprocessor_error do_simd_coprocessor_error
 
+	/*
+	 * Switch from the espfix stack to the proper stack: tricky stuff.
+	 * On the stack right now is 5 words of exception frame,
+	 * error code/oldeax, RDI, and the return value, so no additional
+	 * stack is available.
+	 *
+	 * We will always be using the user space GS on entry.
+	*/
+ENTRY(espfix_fix_stack)
+	SWAPGS
+	cld
+	movq PER_CPU_VAR(kernel_stack),%rdi
+	subq $8*8,%rdi
+	/* Use the real stack to hold these registers for now */
+	movq %rsi,-8(%rdi)
+	movq %rcx,-16(%rdi)
+	movq %rsp,%rsi
+	movl $8,%ecx
+	rep;movsq
+	leaq -(10*8)(%rdi),%rsp
+	popq %rcx
+	popq %rsi
+	SWAPGS
+	retq
 
 	/* Reload gs selector with exception handling */
 	/* edi:  new selector */

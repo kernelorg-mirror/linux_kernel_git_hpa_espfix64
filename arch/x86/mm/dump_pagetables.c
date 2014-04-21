@@ -327,6 +327,8 @@ void ptdump_walk_pgd_level(struct seq_file *m, pgd_t *pgd)
 	int i;
 	struct pg_state st = {};
 
+	st.to_dmesg = true;
+
 	if (pgd) {
 		start = pgd;
 		st.to_dmesg = true;
