@@ -246,7 +246,7 @@ static void notrace start_secondary(void *unused)
 	/*
 	 * Enable the espfix hack for this CPU
 	 */
-	init_espfix_cpu();
+	init_espfix_this_cpu();
 
 	/*
 	 * We need to hold vector_lock so there the set of online cpus

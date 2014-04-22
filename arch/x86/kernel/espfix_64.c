@@ -15,11 +15,14 @@
 #include <asm/pgtable.h>
 
 #define ESPFIX_STACK_SIZE	64
-#define ESPFIX_BASE_ADDR	(-2ULL << PGDIR_SHIFT)
+#define ESPFIX_MAX_CPUS (1ULL << PGDIR_SHIFT)/(65536*ESPFIX_STACK_SIZE)
 
-#if CONFIG_NR_CPUS >= (8 << 20)/ESPFIX_STACK_SIZE
+#if CONFIG_NR_CPUS > ESPFIX_MAX_CPUS
 # error "Need more than one PGD for the ESPFIX hack"
 #endif
+
+#define ESPFIX_STACKS_PER_PAGE	(PAGE_SIZE/ESPFIX_STACK_SIZE)
+#define ESPFIX_BASE_ADDR	(-2ULL << PGDIR_SHIFT)
 
 #define PGALLOC_GFP (GFP_KERNEL | __GFP_NOTRACK | __GFP_REPEAT | __GFP_ZERO)
 #define ESPFIX_PGD_FLAGS (__PAGE_KERNEL & ~_PAGE_DIRTY)
@@ -32,6 +35,11 @@ DEFINE_PER_CPU_READ_MOSTLY(unsigned long, espfix_stack);
 
 /* Initialization mutex - should this be a spinlock? */
 static DEFINE_MUTEX(espfix_init_mutex);
+
+/* Page allocation bitmap - each page serves ESPFIX_STACKS_PER_PAGE CPUs */
+#define ESPFIX_MAX_PAGES  DIV_ROUND_UP(CONFIG_NR_CPUS, ESPFIX_STACKS_PER_PAGE)
+#define ESPFIX_MAP_SIZE   DIV_ROUND_UP(ESPFIX_MAX_PAGES, BITS_PER_LONG)
+static unsigned long espfix_page_alloc_map[ESPFIX_MAP_SIZE];
 
 static __page_aligned_bss pud_t espfix_pud_page[PTRS_PER_PUD]
 	__aligned(PAGE_SIZE);
@@ -51,55 +59,9 @@ static inline unsigned long espfix_base_addr(int cpu)
 #define ESPFIX_PMD_CLONES PTRS_PER_PMD
 #define ESPFIX_PUD_CLONES (65536/(ESPFIX_PTE_CLONES*ESPFIX_PMD_CLONES))
 
-/*
- * Check to see if the espfix stuff is already installed.
- * We do this once before grabbing the lock and, if we have to,
- * once after.
- */
-static bool espfix_already_there(unsigned long addr)
+void init_espfix_this_cpu(void)
 {
-	const pgd_t *pgd_p;
-	pgd_t pgd;
-	const pud_t *pud_p;
-	pud_t pud;
-	const pmd_t *pmd_p;
-	pmd_t pmd;
-	const pte_t *pte_p;
-	pte_t pte;
-	int n;
-
-	pgd_p = &init_level4_pgt[pgd_index(addr)];
-	pgd = ACCESS_ONCE(*pgd_p);
-	if (!pgd_present(pgd))
-		return false;
-
-	pud_p = &espfix_pud_page[pud_index(addr)];
-	for (n = 0; n < ESPFIX_PUD_CLONES; n++) {
-		pud = ACCESS_ONCE(pud_p[n]);
-		if (!pud_present(pud))
-			return false;
-	}
-
-	pmd_p = pmd_offset(&pud, addr);
-	for (n = 0; n < ESPFIX_PMD_CLONES; n++) {
-		pmd = ACCESS_ONCE(pmd_p[n]);
-		if (!pmd_present(pmd))
-			return false;
-	}
-
-	pte_p = pte_offset_kernel(&pmd, addr);
-	for (n = 0; n < ESPFIX_PTE_CLONES; n++) {
-		pte = ACCESS_ONCE(pte_p[n*PTE_STRIDE]);
-		if (!pte_present(pte))
-			return false;
-	}
-
-	return true;		/* All aliases present and accounted for */
-}
-
-void init_espfix_cpu(void)
-{
-	int cpu = smp_processor_id();
+	unsigned int cpu, page;
 	unsigned long addr;
 	pgd_t pgd, *pgd_p;
 	pud_t pud, *pud_p;
@@ -107,31 +69,35 @@ void init_espfix_cpu(void)
 	pte_t pte, *pte_p;
 	int n;
 	void *stack_page;
-
-	cpu = smp_processor_id();
-	BUG_ON(cpu >= (8 << 20)/ESPFIX_STACK_SIZE);
+	pteval_t ptemask;
 
 	/* We only have to do this once... */
 	if (likely(this_cpu_read(espfix_stack)))
 		return;		/* Already initialized */
 
+	cpu = smp_processor_id();
 	addr = espfix_base_addr(cpu);
+	page = cpu/ESPFIX_STACKS_PER_PAGE;
 
 	/* Did another CPU already set this up? */
-	if (likely(espfix_already_there(addr)))
+	if (likely(test_bit(page, espfix_page_alloc_map)))
 		goto done;
 
 	mutex_lock(&espfix_init_mutex);
 
-	if (unlikely(espfix_already_there(addr)))
+	/* Did we race on the lock? */
+	if (unlikely(test_bit(page, espfix_page_alloc_map)))
 		goto unlock_done;
+
+	ptemask = __supported_pte_mask;
 
 	pgd_p = &init_level4_pgt[pgd_index(addr)];
 	pgd = *pgd_p;
 	if (!pgd_present(pgd)) {
 		/* This can only happen on the BSP */
-		pgd = __pgd(__pa(espfix_pud_page) |
-			    (ESPFIX_PGD_FLAGS & __supported_pte_mask));
+		/* XXX: is this early enough or will we have cloning issues? */
+		pgd = __pgd(__pa_symbol(espfix_pud_page) |
+			    (ESPFIX_PGD_FLAGS & ptemask));
 		set_pgd(pgd_p, pgd);
 	}
 
@@ -139,8 +105,7 @@ void init_espfix_cpu(void)
 	pud = *pud_p;
 	if (!pud_present(pud)) {
 		pmd_p = (pmd_t *)__get_free_page(PGALLOC_GFP);
-		pud = __pud(__pa(pmd_p) |
-			    (ESPFIX_PUD_FLAGS & __supported_pte_mask));
+		pud = __pud(__pa(pmd_p) | (ESPFIX_PUD_FLAGS & ptemask));
 		for (n = 0; n < ESPFIX_PUD_CLONES; n++)
 			set_pud(&pud_p[n], pud);
 	}
@@ -149,18 +114,19 @@ void init_espfix_cpu(void)
 	pmd = *pmd_p;
 	if (!pmd_present(pmd)) {
 		pte_p = (pte_t *)__get_free_page(PGALLOC_GFP);
-		pmd = __pmd(__pa(pte_p) |
-			    (ESPFIX_PMD_FLAGS & __supported_pte_mask));
+		pmd = __pmd(__pa(pte_p) | (ESPFIX_PMD_FLAGS & ptemask));
 		for (n = 0; n < ESPFIX_PMD_CLONES; n++)
 			set_pmd(&pmd_p[n], pmd);
 	}
 
 	pte_p = pte_offset_kernel(&pmd, addr);
 	stack_page = (void *)__get_free_page(GFP_KERNEL);
-	pte = __pte(__pa(stack_page) |
-		    (ESPFIX_PTE_FLAGS & __supported_pte_mask));
+	pte = __pte(__pa(stack_page) | (ESPFIX_PTE_FLAGS & ptemask));
 	for (n = 0; n < ESPFIX_PTE_CLONES; n++)
 		set_pte(&pte_p[n*PTE_STRIDE], pte);
+
+	/* Job is done for this CPU and any CPU which shares this page */
+	set_bit(page, espfix_page_alloc_map);
 
 unlock_done:
 	mutex_unlock(&espfix_init_mutex);
