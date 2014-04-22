@@ -14,21 +14,17 @@
 #include <linux/gfp.h>
 #include <asm/pgtable.h>
 
-#define ESPFIX_STACK_SIZE	64
-#define ESPFIX_MAX_CPUS (1ULL << PGDIR_SHIFT)/(65536*ESPFIX_STACK_SIZE)
+#define ESPFIX_STACK_SIZE	64UL
+#define ESPFIX_STACKS_PER_PAGE	(PAGE_SIZE/ESPFIX_STACK_SIZE)
 
+#define ESPFIX_MAX_CPUS (ESPFIX_STACKS_PER_PAGE << (PGDIR_SHIFT-PAGE_SHIFT-16))
 #if CONFIG_NR_CPUS > ESPFIX_MAX_CPUS
 # error "Need more than one PGD for the ESPFIX hack"
 #endif
 
-#define ESPFIX_STACKS_PER_PAGE	(PAGE_SIZE/ESPFIX_STACK_SIZE)
-#define ESPFIX_BASE_ADDR	(-2ULL << PGDIR_SHIFT)
+#define ESPFIX_BASE_ADDR	(-2UL << PGDIR_SHIFT)
 
 #define PGALLOC_GFP (GFP_KERNEL | __GFP_NOTRACK | __GFP_REPEAT | __GFP_ZERO)
-#define ESPFIX_PGD_FLAGS (__PAGE_KERNEL & ~_PAGE_DIRTY)
-#define ESPFIX_PUD_FLAGS (__PAGE_KERNEL & ~_PAGE_DIRTY)
-#define ESPFIX_PMD_FLAGS (__PAGE_KERNEL & ~_PAGE_DIRTY)
-#define ESPFIX_PTE_FLAGS __PAGE_KERNEL
 
 /* This contains the *bottom* address of the espfix stack */
 DEFINE_PER_CPU_READ_MOSTLY(unsigned long, espfix_stack);
@@ -44,11 +40,17 @@ static unsigned long espfix_page_alloc_map[ESPFIX_MAP_SIZE];
 static __page_aligned_bss pud_t espfix_pud_page[PTRS_PER_PUD]
 	__aligned(PAGE_SIZE);
 
-/* This returns the bottom address of the espfix stack for a specific CPU */
-static inline unsigned long espfix_base_addr(int cpu)
+/*
+ * This returns the bottom address of the espfix stack for a specific CPU.
+ * The math allows for a non-power-of-two ESPFIX_STACK_SIZE, in which case
+ * we have to account for some amount of padding at the end of each page.
+ */
+static inline unsigned long espfix_base_addr(unsigned int cpu)
 {
-	unsigned long addr = cpu * ESPFIX_STACK_SIZE;
+	unsigned long page, addr;
 
+	page = (cpu / ESPFIX_STACKS_PER_PAGE) << PAGE_SHIFT;
+	addr = page + (cpu % ESPFIX_STACKS_PER_PAGE) * ESPFIX_STACK_SIZE;
 	addr = (addr & 0xffffUL) | ((addr & ~0xffffUL) << 16);
 	addr += ESPFIX_BASE_ADDR;
 	return addr;
@@ -97,7 +99,7 @@ void init_espfix_this_cpu(void)
 		/* This can only happen on the BSP */
 		/* XXX: is this early enough or will we have cloning issues? */
 		pgd = __pgd(__pa_symbol(espfix_pud_page) |
-			    (ESPFIX_PGD_FLAGS & ptemask));
+			    (_KERNPG_TABLE & ptemask));
 		set_pgd(pgd_p, pgd);
 	}
 
@@ -105,7 +107,7 @@ void init_espfix_this_cpu(void)
 	pud = *pud_p;
 	if (!pud_present(pud)) {
 		pmd_p = (pmd_t *)__get_free_page(PGALLOC_GFP);
-		pud = __pud(__pa(pmd_p) | (ESPFIX_PUD_FLAGS & ptemask));
+		pud = __pud(__pa(pmd_p) | (_KERNPG_TABLE & ptemask));
 		for (n = 0; n < ESPFIX_PUD_CLONES; n++)
 			set_pud(&pud_p[n], pud);
 	}
@@ -114,14 +116,14 @@ void init_espfix_this_cpu(void)
 	pmd = *pmd_p;
 	if (!pmd_present(pmd)) {
 		pte_p = (pte_t *)__get_free_page(PGALLOC_GFP);
-		pmd = __pmd(__pa(pte_p) | (ESPFIX_PMD_FLAGS & ptemask));
+		pmd = __pmd(__pa(pte_p) | (_KERNPG_TABLE & ptemask));
 		for (n = 0; n < ESPFIX_PMD_CLONES; n++)
 			set_pmd(&pmd_p[n], pmd);
 	}
 
 	pte_p = pte_offset_kernel(&pmd, addr);
 	stack_page = (void *)__get_free_page(GFP_KERNEL);
-	pte = __pte(__pa(stack_page) | (ESPFIX_PTE_FLAGS & ptemask));
+	pte = __pte(__pa(stack_page) | (__PAGE_KERNEL & ptemask));
 	for (n = 0; n < ESPFIX_PTE_CLONES; n++)
 		set_pte(&pte_p[n*PTE_STRIDE], pte);
 
@@ -132,6 +134,4 @@ unlock_done:
 	mutex_unlock(&espfix_init_mutex);
 done:
 	this_cpu_write(espfix_stack, addr);
-	printk(KERN_ERR "espfix: Initializing espfix for cpu %d, stack @ %p\n",
-		 cpu, (const void *)addr);
 }
