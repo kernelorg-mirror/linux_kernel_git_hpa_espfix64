@@ -97,7 +97,6 @@ void init_espfix_this_cpu(void)
 	pgd = *pgd_p;
 	if (!pgd_present(pgd)) {
 		/* This can only happen on the BSP */
-		/* XXX: is this early enough or will we have cloning issues? */
 		pgd = __pgd(__pa_symbol(espfix_pud_page) |
 			    (_KERNPG_TABLE & ptemask));
 		set_pgd(pgd_p, pgd);
