@@ -32,7 +32,6 @@
  * Manage page tables very early on.
  */
 extern pgd_t early_level4_pgt[PTRS_PER_PGD];
-extern pud_t espfix_pud_page[PTRS_PER_PUD];
 extern pmd_t early_dynamic_pgts[EARLY_DYNAMIC_PAGE_TABLES][PTRS_PER_PMD];
 static unsigned int __initdata next_early_pgt = 2;
 pmdval_t early_pmd_flags = __PAGE_KERNEL_LARGE & ~(_PAGE_GLOBAL | _PAGE_NX);
