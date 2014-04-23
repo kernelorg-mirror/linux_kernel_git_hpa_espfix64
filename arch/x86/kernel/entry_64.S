@@ -1238,17 +1238,6 @@ apicinterrupt IRQ_WORK_VECTOR \
 	irq_work_interrupt smp_irq_work_interrupt
 #endif
 
-.macro espfix_adjust_stack
-	pushq_cfi %rdi
-	movq %rsp,%rdi
-	sarq $PGDIR_SHIFT,%rdi
-	cmpl $-2,%edi
-	jne 1f
-	call espfix_fix_stack
-1:
-	popq_cfi %rdi		/* Fix so we don't need this again */
-.endm
-
 /*
  * Exception entry points.
  */
@@ -1258,7 +1247,6 @@ ENTRY(\sym)
 	ASM_CLAC
 	PARAVIRT_ADJUST_EXCEPTION_FRAME
 	pushq_cfi $-1		/* ORIG_RAX: no syscall to restart */
-	espfix_adjust_stack
 	subq $ORIG_RAX-R15, %rsp
 	CFI_ADJUST_CFA_OFFSET ORIG_RAX-R15
 	call error_entry
@@ -1277,7 +1265,6 @@ ENTRY(\sym)
 	ASM_CLAC
 	PARAVIRT_ADJUST_EXCEPTION_FRAME
 	pushq_cfi $-1		/* ORIG_RAX: no syscall to restart */
-	espfix_adjust_stack
 	subq $ORIG_RAX-R15, %rsp
 	CFI_ADJUST_CFA_OFFSET ORIG_RAX-R15
 	call save_paranoid
@@ -1316,7 +1303,6 @@ ENTRY(\sym)
 	XCPT_FRAME
 	ASM_CLAC
 	PARAVIRT_ADJUST_EXCEPTION_FRAME
-	espfix_adjust_stack
 	subq $ORIG_RAX-R15, %rsp
 	CFI_ADJUST_CFA_OFFSET ORIG_RAX-R15
 	call error_entry
@@ -1326,6 +1312,62 @@ ENTRY(\sym)
 	movq $-1,ORIG_RAX(%rsp)		/* no syscall to restart */
 	call \do_sym
 	jmp error_exit			/* %ebx: no swapgs flag */
+	CFI_ENDPROC
+END(\sym)
+.endm
+
+/*
+ * Same as errorentry, except use for #GP in case we take the exception
+ * while on the espfix stack.  All other exceptions that are possible while
+ * on the espfix stack use IST, but that is not really practical for #GP
+ * for nesting reasons.
+ */
+.macro errorentry_espfix sym do_sym
+ENTRY(\sym)
+	XCPT_FRAME
+	ASM_CLAC
+	PARAVIRT_ADJUST_EXCEPTION_FRAME
+	/* Check if we are on the espfix stack */
+	pushq_cfi %rdi
+	pushq_cfi %rsi
+	movq %rsp,%rdi
+	sarq $PGDIR_SHIFT,%rdi
+	cmpl $-2,%edi			/* Are we on the espfix stack? */
+	CFI_REMEMBER_STATE
+	je 1f
+2:
+	subq $RSI-R15, %rsp
+	CFI_ADJUST_CFA_OFFSET RSI-R15
+	call error_entry_rdi_rsi_saved
+	DEFAULT_FRAME 0
+	movq %rsp,%rdi			/* pt_regs pointer */
+	movq ORIG_RAX(%rsp),%rsi	/* get error code */
+	movq $-1,ORIG_RAX(%rsp)		/* no syscall to restart */
+	call \do_sym
+	jmp error_exit			/* %ebx: no swapgs flag */
+1:
+	CFI_RESTORE_STATE
+	SWAPGS
+	movq PER_CPU_VAR(kernel_stack),%rdi
+	SWAPGS
+	/* Copy data from the espfix stack to the real stack */
+	movq %rsi,-64(%rdi)		/* Saved value of %rsi already */
+	movq 8(%rsp),%rsi
+	movq %rsi,-56(%rdi)
+	movq 16(%rsp),%rsi
+	movq %rsi,-48(%rdi)
+	movq 24(%rsp),%rsi
+	movq %rsi,-40(%rdi)
+	movq 32(%rsp),%rsi
+	movq %rsi,-32(%rdi)
+	movq 40(%rsp),%rsi
+	movq %rsi,-24(%rdi)
+	movq 48(%rsp),%rsi
+	movq %rsi,-16(%rdi)
+	movq 56(%rsp),%rsi
+	movq %rsi,-8(%rdi)
+	leaq -64(%rdi),%rsp
+	jmp 2b
 	CFI_ENDPROC
 END(\sym)
 .endm
@@ -1347,7 +1389,6 @@ ENTRY(\sym)
 	XCPT_FRAME
 	ASM_CLAC
 	PARAVIRT_ADJUST_EXCEPTION_FRAME
-	espfix_adjust_stack
 	subq $ORIG_RAX-R15, %rsp
 	CFI_ADJUST_CFA_OFFSET ORIG_RAX-R15
 	call save_paranoid
@@ -1375,31 +1416,6 @@ zeroentry spurious_interrupt_bug do_spurious_interrupt_bug
 zeroentry coprocessor_error do_coprocessor_error
 errorentry alignment_check do_alignment_check
 zeroentry simd_coprocessor_error do_simd_coprocessor_error
-
-	/*
-	 * Switch from the espfix stack to the proper stack: tricky stuff.
-	 * On the stack right now is 5 words of exception frame,
-	 * error code/oldeax, RDI, and the return value, so no additional
-	 * stack is available.
-	 *
-	 * We will always be using the user space GS on entry.
-	*/
-ENTRY(espfix_fix_stack)
-	SWAPGS
-	cld
-	movq PER_CPU_VAR(kernel_stack),%rdi
-	subq $8*8,%rdi
-	/* Use the real stack to hold these registers for now */
-	movq %rsi,-8(%rdi)
-	movq %rcx,-16(%rdi)
-	movq %rsp,%rsi
-	movl $8,%ecx
-	rep;movsq
-	leaq -(10*8)(%rdi),%rsp
-	popq %rcx
-	popq %rsi
-	SWAPGS
-	retq
 
 	/* Reload gs selector with exception handling */
 	/* edi:  new selector */
@@ -1567,7 +1583,7 @@ zeroentry xen_debug do_debug
 zeroentry xen_int3 do_int3
 errorentry xen_stack_segment do_stack_segment
 #endif
-errorentry general_protection do_general_protection
+errorentry_espfix general_protection do_general_protection
 trace_errorentry page_fault do_page_fault
 #ifdef CONFIG_KVM_GUEST
 errorentry async_page_fault do_async_page_fault
@@ -1644,9 +1660,10 @@ ENTRY(error_entry)
 	XCPT_FRAME
 	CFI_ADJUST_CFA_OFFSET 15*8
 	/* oldrax contains error code */
-	cld
 	movq_cfi rdi, RDI+8
 	movq_cfi rsi, RSI+8
+error_entry_rdi_rsi_saved:
+	cld
 	movq_cfi rdx, RDX+8
 	movq_cfi rcx, RCX+8
 	movq_cfi rax, RAX+8
