@@ -619,7 +619,7 @@ asmlinkage void __init start_kernel(void)
 #endif
 #ifdef CONFIG_X86_64
 	/* Should be run before the first non-init thread is created */
-	init_espfix_this_cpu();
+	init_espfix_bsp();
 #endif
 	thread_info_cache_init();
 	cred_init();

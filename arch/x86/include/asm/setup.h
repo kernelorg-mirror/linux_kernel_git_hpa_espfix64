@@ -57,7 +57,8 @@ extern void x86_ce4100_early_setup(void);
 static inline void x86_ce4100_early_setup(void) { }
 #endif
 
-extern void init_espfix_this_cpu(void);
+extern void init_espfix_bsp(void);
+extern void init_espfix_ap(void);
 
 #ifndef _SETUP
 

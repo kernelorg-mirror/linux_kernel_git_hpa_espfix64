@@ -1059,31 +1059,27 @@ ENTRY(native_iret)
 #endif
 
 irq_return_ldt:
-	pushq_cfi %rcx
-	larl (CS-RIP+8)(%rsp), %ecx
-	jnz 1f		/* Invalid segment - will #GP at IRET time */
-	testl $0x00200000, %ecx
-	jnz 1f		/* Returning to 64-bit mode */
-	larl (SS-RIP+8)(%rsp), %ecx
-	jnz 1f		/* Invalid segment - will #SS at IRET time */
-	testl $0x00400000, %ecx
-	jnz 1f		/* Not a 16-bit stack segment */
-	pushq_cfi %rsi
+	pushq_cfi %rax
 	pushq_cfi %rdi
 	SWAPGS
-	movq PER_CPU_VAR(espfix_stack),%rdi
-	movl (RSP-RIP+3*8)(%rsp),%esi
-	xorw %si,%si
-	orq %rsi,%rdi
-	movq %rsp,%rsi
-	movl $8,%ecx
-	rep;movsq
-	leaq -(8*8)(%rdi),%rsp
-	SWAPGS
+	movq PER_CPU_VAR(espfix_waddr),%rdi
+	movq %rax,(0*8)(%rdi)	/* RAX */
+	movq (2*8)(%rsp),%rax	/* RIP */
+	movq %rax,(1*8)(%rdi)
+	movq (3*8)(%rsp),%rax	/* CS */
+	movq %rax,(2*8)(%rdi)
+	movq (4*8)(%rsp),%rax	/* RFLAGS */
+	movq %rax,(3*8)(%rdi)
+	movq (6*8)(%rsp),%rax	/* SS */
+	movq %rax,(5*8)(%rdi)
+	movq (5*8)(%rsp),%rax	/* RSP */
+	movq %rax,(4*8)(%rdi)
+	andl $0xffff0000,%eax
 	popq_cfi %rdi
-	popq_cfi %rsi
-1:
-	popq_cfi %rcx
+	orq PER_CPU_VAR(espfix_stack),%rax
+	SWAPGS
+	movq %rax,%rsp
+	popq_cfi %rax
 	jmp irq_return_iret
 
 	.section .fixup,"ax"
@@ -1095,17 +1091,44 @@ bad_iret:
 	 * So pretend we completed the iret and took the #GPF in user mode.
 	 *
 	 * We are now running with the kernel GS after exception recovery.
-	 * Exception entry will have removed us from the espfix stack.
 	 * But error_entry expects us to have user GS to match the user %cs,
 	 * so swap back.
 	 */
 	pushq $0
-
 	SWAPGS
+
 	jmp general_protection
 
 	.previous
 
+	/*
+	 * If IRET takes a fault on the espfix stack, then we
+	 * end up promoting it to a doublefault.  In that case, unwind
+	 * the stack and invoke bad_iret.
+	 */
+__do_double_fault:
+	movq (RSP+8),%rax		/* Trap on the espfix stack? */
+	sarq $PGDIR_SHIFT,%rax
+	cmpl $-2,%eax
+	jne do_double_fault		/* No, just deliver the fault */
+	cmpl $__KERNEL_DS,(SS+8)
+	jne do_double_fault
+	cmpl $__KERNEL_CS,(CS+8)
+	jne do_double_fault
+	movq (RIP+8),%rax
+	cmpq $irq_return_iret,%rax
+#ifdef CONFIG_PARAVIRT
+	je 1f
+	cmpq $native_iret,%rax
+#endif
+	jne do_double_fault		/* This shouldn't happen... */
+1:
+	movq PER_CPU_VAR(kernel_stack),%rax
+	subq $(5*8),%rax		/* Reset to the original stack */
+	movq %rax,(RSP+8)
+	movq $bad_iret,(RIP+8)
+	retq
+	
 	/* edi: workmask, edx: work */
 retint_careful:
 	CFI_RESTORE_STATE
@@ -1316,62 +1339,6 @@ ENTRY(\sym)
 END(\sym)
 .endm
 
-/*
- * Same as errorentry, except use for #GP in case we take the exception
- * while on the espfix stack.  All other exceptions that are possible while
- * on the espfix stack use IST, but that is not really practical for #GP
- * for nesting reasons.
- */
-.macro errorentry_espfix sym do_sym
-ENTRY(\sym)
-	XCPT_FRAME
-	ASM_CLAC
-	PARAVIRT_ADJUST_EXCEPTION_FRAME
-	/* Check if we are on the espfix stack */
-	pushq_cfi %rdi
-	pushq_cfi %rsi
-	movq %rsp,%rdi
-	sarq $PGDIR_SHIFT,%rdi
-	cmpl $-2,%edi			/* Are we on the espfix stack? */
-	CFI_REMEMBER_STATE
-	je 1f
-2:
-	subq $RSI-R15, %rsp
-	CFI_ADJUST_CFA_OFFSET RSI-R15
-	call error_entry_rdi_rsi_saved
-	DEFAULT_FRAME 0
-	movq %rsp,%rdi			/* pt_regs pointer */
-	movq ORIG_RAX(%rsp),%rsi	/* get error code */
-	movq $-1,ORIG_RAX(%rsp)		/* no syscall to restart */
-	call \do_sym
-	jmp error_exit			/* %ebx: no swapgs flag */
-1:
-	CFI_RESTORE_STATE
-	SWAPGS
-	movq PER_CPU_VAR(kernel_stack),%rdi
-	SWAPGS
-	/* Copy data from the espfix stack to the real stack */
-	movq %rsi,-64(%rdi)		/* Saved value of %rsi already */
-	movq 8(%rsp),%rsi
-	movq %rsi,-56(%rdi)
-	movq 16(%rsp),%rsi
-	movq %rsi,-48(%rdi)
-	movq 24(%rsp),%rsi
-	movq %rsi,-40(%rdi)
-	movq 32(%rsp),%rsi
-	movq %rsi,-32(%rdi)
-	movq 40(%rsp),%rsi
-	movq %rsi,-24(%rdi)
-	movq 48(%rsp),%rsi
-	movq %rsi,-16(%rdi)
-	movq 56(%rsp),%rsi
-	movq %rsi,-8(%rdi)
-	leaq -64(%rdi),%rsp
-	jmp 2b
-	CFI_ENDPROC
-END(\sym)
-.endm
-
 #ifdef CONFIG_TRACING
 .macro trace_errorentry sym do_sym
 errorentry trace(\sym) trace(\do_sym)
@@ -1408,7 +1375,7 @@ zeroentry overflow do_overflow
 zeroentry bounds do_bounds
 zeroentry invalid_op do_invalid_op
 zeroentry device_not_available do_device_not_available
-paranoiderrorentry double_fault do_double_fault
+paranoiderrorentry double_fault __do_double_fault
 zeroentry coprocessor_segment_overrun do_coprocessor_segment_overrun
 errorentry invalid_TSS do_invalid_TSS
 errorentry segment_not_present do_segment_not_present
@@ -1583,7 +1550,7 @@ zeroentry xen_debug do_debug
 zeroentry xen_int3 do_int3
 errorentry xen_stack_segment do_stack_segment
 #endif
-errorentry_espfix general_protection do_general_protection
+errorentry general_protection do_general_protection
 trace_errorentry page_fault do_page_fault
 #ifdef CONFIG_KVM_GUEST
 errorentry async_page_fault do_async_page_fault
