@@ -1103,19 +1103,20 @@ bad_iret:
 
 	/*
 	 * If IRET takes a fault on the espfix stack, then we
-	 * end up promoting it to a doublefault.  In that case, unwind
-	 * the stack and invoke bad_iret.
+	 * end up promoting it to a doublefault.  In that case,
+	 * modify the stack to make it look like we just entered
+	 * the #GP handler from user space, similar to bad_iret.
 	 */
 __do_double_fault:
-	movq (RSP+8),%rax		/* Trap on the espfix stack? */
+	movq RSP(%rdi),%rax		/* Trap on the espfix stack? */
 	sarq $PGDIR_SHIFT,%rax
 	cmpl $-2,%eax
 	jne do_double_fault		/* No, just deliver the fault */
-	cmpl $__KERNEL_DS,(SS+8)
+	cmpl $__KERNEL_DS,SS(%rdi)
 	jne do_double_fault
-	cmpl $__KERNEL_CS,(CS+8)
+	cmpl $__KERNEL_CS,CS(%rdi)
 	jne do_double_fault
-	movq (RIP+8),%rax
+	movq RIP(%rdi),%rax
 	cmpq $irq_return_iret,%rax
 #ifdef CONFIG_PARAVIRT
 	je 1f
@@ -1124,9 +1125,10 @@ __do_double_fault:
 	jne do_double_fault		/* This shouldn't happen... */
 1:
 	movq PER_CPU_VAR(kernel_stack),%rax
-	subq $(5*8),%rax		/* Reset to the original stack */
-	movq %rax,(RSP+8)
-	movq $bad_iret,(RIP+8)
+	subq $(6*8-KERNEL_STACK_OFFSET),%rax	/* Reset to original stack */
+	movq %rax,RSP(%rdi)
+	movq $0,(%rax)			/* Missing (lost) #GP error code */
+	movq $general_protection,RIP(%rdi)
 	retq
 	
 	/* edi: workmask, edx: work */
