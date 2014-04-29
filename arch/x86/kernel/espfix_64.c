@@ -9,11 +9,13 @@
  * ----------------------------------------------------------------------- */
 
 #include <linux/init.h>
+#include <linux/init_task.h>
 #include <linux/kernel.h>
 #include <linux/percpu.h>
 #include <linux/gfp.h>
 #include <linux/random.h>
 #include <asm/pgtable.h>
+#include <asm/pgalloc.h>
 #include <asm/setup.h>
 
 /*
@@ -95,15 +97,14 @@ static void init_espfix_random(void)
 
 void init_espfix_bsp(void)
 {
-	pgd_t pgd, *pgd_p;
+	pgd_t *pgd_p;
 	pteval_t ptemask;
 
 	ptemask = __supported_pte_mask;
 
 	/* Install the espfix pud into the kernel page directory */
 	pgd_p = &init_level4_pgt[pgd_index(ESPFIX_BASE_ADDR)];
-	pgd = __pgd(__pa_symbol(espfix_pud_page) | (PGTABLE_PROT & ptemask));
-	set_pgd(pgd_p, pgd);
+	pgd_populate(&init_mm, pgd_p, (pud_t *)espfix_pud_page);
 
 	/* Randomize the locations */
 	init_espfix_random();
@@ -150,6 +151,7 @@ void init_espfix_ap(void)
 	if (!pud_present(pud)) {
 		pmd_p = (pmd_t *)__get_free_page(PGALLOC_GFP);
 		pud = __pud(__pa(pmd_p) | (PGTABLE_PROT & ptemask));
+		paravirt_alloc_pud(&init_mm, __pa(pmd_p) >> PAGE_SHIFT);
 		for (n = 0; n < ESPFIX_PUD_CLONES; n++)
 			set_pud(&pud_p[n], pud);
 	}
@@ -159,6 +161,7 @@ void init_espfix_ap(void)
 	if (!pmd_present(pmd)) {
 		pte_p = (pte_t *)__get_free_page(PGALLOC_GFP);
 		pmd = __pmd(__pa(pte_p) | (PGTABLE_PROT & ptemask));
+		paravirt_alloc_pmd(&init_mm, __pa(pte_p) >> PAGE_SHIFT);
 		for (n = 0; n < ESPFIX_PMD_CLONES; n++)
 			set_pmd(&pmd_p[n], pmd);
 	}
@@ -166,6 +169,7 @@ void init_espfix_ap(void)
 	pte_p = pte_offset_kernel(&pmd, addr);
 	stack_page = (void *)__get_free_page(GFP_KERNEL);
 	pte = __pte(__pa(stack_page) | (__PAGE_KERNEL_RO & ptemask));
+	paravirt_alloc_pte(&init_mm, __pa(stack_page) >> PAGE_SHIFT);
 	for (n = 0; n < ESPFIX_PTE_CLONES; n++)
 		set_pte(&pte_p[n*PTE_STRIDE], pte);
 
