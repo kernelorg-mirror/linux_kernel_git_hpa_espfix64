@@ -1143,6 +1143,8 @@ ENTRY(retint_kernel)
 	call preempt_schedule_irq
 	jmp exit_intr
 #endif
+	CFI_ENDPROC
+END(common_interrupt)
 
 	/*
 	 * If IRET takes a fault on the espfix stack, then we
@@ -1150,6 +1152,7 @@ ENTRY(retint_kernel)
 	 * modify the stack to make it look like we just entered
 	 * the #GP handler from user space, similar to bad_iret.
 	 */
+	ALIGN
 __do_double_fault:
 	XCPT_FRAME 1 RDI+8
 	movq RSP(%rdi),%rax		/* Trap on the espfix stack? */
@@ -1172,9 +1175,9 @@ __do_double_fault:
 	movq $0,(%rax)			/* Missing (lost) #GP error code */
 	movq $general_protection,RIP(%rdi)
 	retq
-
 	CFI_ENDPROC
-END(common_interrupt)
+END(__do_double_fault)
+
 /*
  * End of kprobes section
  */
