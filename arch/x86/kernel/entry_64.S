@@ -1112,8 +1112,6 @@ __do_double_fault:
 	sarq $PGDIR_SHIFT,%rax
 	cmpl $-2,%eax
 	jne do_double_fault		/* No, just deliver the fault */
-	cmpl $__KERNEL_DS,SS(%rdi)
-	jne do_double_fault
 	cmpl $__KERNEL_CS,CS(%rdi)
 	jne do_double_fault
 	movq RIP(%rdi),%rax
