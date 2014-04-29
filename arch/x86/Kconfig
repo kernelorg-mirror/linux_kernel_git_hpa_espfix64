@@ -914,6 +914,14 @@ config VM86
 	  XFree86 to initialize some video cards via BIOS. Disabling this
 	  option saves about 6k.
 
+config X86_16BIT
+	bool "Enable 16-bit segments" if EXPERT
+	default y
+	---help---
+	  This option enables the execution of 16-bit protected mode
+	  software.  This is primarily used to run Win16 software
+	  under Wine and 16-bit extended DOS programs under DOSEMU.
+
 config TOSHIBA
 	tristate "Toshiba Laptop support"
 	depends on X86_32
