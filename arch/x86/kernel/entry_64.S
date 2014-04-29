@@ -1101,34 +1101,6 @@ bad_iret:
 
 	.previous
 
-	/*
-	 * If IRET takes a fault on the espfix stack, then we
-	 * end up promoting it to a doublefault.  In that case,
-	 * modify the stack to make it look like we just entered
-	 * the #GP handler from user space, similar to bad_iret.
-	 */
-__do_double_fault:
-	movq RSP(%rdi),%rax		/* Trap on the espfix stack? */
-	sarq $PGDIR_SHIFT,%rax
-	cmpl $ESPFIX_PGD_ENTRY,%eax
-	jne do_double_fault		/* No, just deliver the fault */
-	cmpl $__KERNEL_CS,CS(%rdi)
-	jne do_double_fault
-	movq RIP(%rdi),%rax
-	cmpq $irq_return_iret,%rax
-#ifdef CONFIG_PARAVIRT
-	je 1f
-	cmpq $native_iret,%rax
-#endif
-	jne do_double_fault		/* This shouldn't happen... */
-1:
-	movq PER_CPU_VAR(kernel_stack),%rax
-	subq $(6*8-KERNEL_STACK_OFFSET),%rax	/* Reset to original stack */
-	movq %rax,RSP(%rdi)
-	movq $0,(%rax)			/* Missing (lost) #GP error code */
-	movq $general_protection,RIP(%rdi)
-	retq
-
 	/* edi: workmask, edx: work */
 retint_careful:
 	CFI_RESTORE_STATE
@@ -1171,6 +1143,35 @@ ENTRY(retint_kernel)
 	call preempt_schedule_irq
 	jmp exit_intr
 #endif
+
+	/*
+	 * If IRET takes a fault on the espfix stack, then we
+	 * end up promoting it to a doublefault.  In that case,
+	 * modify the stack to make it look like we just entered
+	 * the #GP handler from user space, similar to bad_iret.
+	 */
+__do_double_fault:
+	XCPT_FRAME 1 RDI+8
+	movq RSP(%rdi),%rax		/* Trap on the espfix stack? */
+	sarq $PGDIR_SHIFT,%rax
+	cmpl $ESPFIX_PGD_ENTRY,%eax
+	jne do_double_fault		/* No, just deliver the fault */
+	cmpl $__KERNEL_CS,CS(%rdi)
+	jne do_double_fault
+	movq RIP(%rdi),%rax
+	cmpq $irq_return_iret,%rax
+#ifdef CONFIG_PARAVIRT
+	je 1f
+	cmpq $native_iret,%rax
+#endif
+	jne do_double_fault		/* This shouldn't happen... */
+1:
+	movq PER_CPU_VAR(kernel_stack),%rax
+	subq $(6*8-KERNEL_STACK_OFFSET),%rax	/* Reset to original stack */
+	movq %rax,RSP(%rdi)
+	movq $0,(%rax)			/* Missing (lost) #GP error code */
+	movq $general_protection,RIP(%rdi)
+	retq
 
 	CFI_ENDPROC
 END(common_interrupt)
@@ -1628,10 +1629,9 @@ ENTRY(error_entry)
 	XCPT_FRAME
 	CFI_ADJUST_CFA_OFFSET 15*8
 	/* oldrax contains error code */
+	cld
 	movq_cfi rdi, RDI+8
 	movq_cfi rsi, RSI+8
-error_entry_rdi_rsi_saved:
-	cld
 	movq_cfi rdx, RDX+8
 	movq_cfi rcx, RCX+8
 	movq_cfi rax, RAX+8
