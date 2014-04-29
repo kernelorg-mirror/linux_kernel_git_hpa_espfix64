@@ -31,8 +31,6 @@
 # error "Need more than one PGD for the ESPFIX hack"
 #endif
 
-#define ESPFIX_BASE_ADDR	(-2UL << PGDIR_SHIFT)
-
 #define PGALLOC_GFP (GFP_KERNEL | __GFP_NOTRACK | __GFP_REPEAT | __GFP_ZERO)
 
 /* This contains the *bottom* address of the espfix stack */

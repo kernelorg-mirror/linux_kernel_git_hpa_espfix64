@@ -1110,7 +1110,7 @@ bad_iret:
 __do_double_fault:
 	movq RSP(%rdi),%rax		/* Trap on the espfix stack? */
 	sarq $PGDIR_SHIFT,%rax
-	cmpl $-2,%eax
+	cmpl $ESPFIX_PGD_ENTRY,%eax
 	jne do_double_fault		/* No, just deliver the fault */
 	cmpl $__KERNEL_CS,CS(%rdi)
 	jne do_double_fault
