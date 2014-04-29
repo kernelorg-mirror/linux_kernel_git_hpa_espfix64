@@ -95,7 +95,7 @@ static void init_espfix_random(void)
 		& (ESPFIX_PAGE_SPACE - 1);
 }
 
-void init_espfix_bsp(void)
+void __init init_espfix_bsp(void)
 {
 	pgd_t *pgd_p;
 	pteval_t ptemask;
