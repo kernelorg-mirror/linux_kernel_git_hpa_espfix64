@@ -1270,8 +1270,6 @@ static void init_std_data(struct entropy_store *r)
  */
 static int rand_initialize(void)
 {
-	printk(KERN_INFO "rand_initialize\n");
-
 	init_std_data(&input_pool);
 	init_std_data(&blocking_pool);
 	init_std_data(&nonblocking_pool);

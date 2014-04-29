@@ -100,8 +100,6 @@ void init_espfix_bsp(void)
 	pgd_t pgd, *pgd_p;
 	pteval_t ptemask;
 
-	printk(KERN_INFO "init_espfix_bsp\n");
-
 	ptemask = __supported_pte_mask;
 
 	/* Install the espfix pud into the kernel page directory */
@@ -182,7 +180,4 @@ done:
 	this_cpu_write(espfix_stack, addr);
 	this_cpu_write(espfix_waddr, (unsigned long)stack_page
 		       + (addr & ~PAGE_MASK));
-
-	printk(KERN_INFO "espfix: cpu %u stack %p waddr %p\n",
-	       cpu, (void *)addr, (void *)this_cpu_read(espfix_waddr));
 }

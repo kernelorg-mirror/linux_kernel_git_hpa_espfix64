@@ -1095,8 +1095,8 @@ bad_iret:
 	 * so swap back.
 	 */
 	pushq $0
-	SWAPGS
 
+	SWAPGS
 	jmp general_protection
 
 	.previous
@@ -1128,7 +1128,7 @@ __do_double_fault:
 	movq $0,(%rax)			/* Missing (lost) #GP error code */
 	movq $general_protection,RIP(%rdi)
 	retq
-	
+
 	/* edi: workmask, edx: work */
 retint_careful:
 	CFI_RESTORE_STATE
@@ -1383,6 +1383,7 @@ zeroentry spurious_interrupt_bug do_spurious_interrupt_bug
 zeroentry coprocessor_error do_coprocessor_error
 errorentry alignment_check do_alignment_check
 zeroentry simd_coprocessor_error do_simd_coprocessor_error
+
 
 	/* Reload gs selector with exception handling */
 	/* edi:  new selector */
