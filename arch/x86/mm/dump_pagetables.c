@@ -36,6 +36,7 @@ struct pg_state {
 struct addr_marker {
 	unsigned long start_address;
 	const char *name;
+	bool ratelimit;
 };
 
 /* indices for address_markers; keep sync'd w/ address_markers below */
@@ -69,7 +70,7 @@ static struct addr_marker address_markers[] = {
 	{ PAGE_OFFSET,		"Low Kernel Mapping" },
 	{ VMALLOC_START,        "vmalloc() Area" },
 	{ VMEMMAP_START,        "Vmemmap" },
-	{ ESPFIX_BASE_ADDR,	"ESPfix Area" },
+	{ ESPFIX_BASE_ADDR,	"ESPfix Area",	true },
 	{ __START_KERNEL_map,   "High Kernel Mapping" },
 	{ MODULES_VADDR,        "Modules" },
 	{ MODULES_END,          "End Modules" },
@@ -108,6 +109,8 @@ static struct addr_marker address_markers[] = {
 		if (m)						\
 			seq_printf(m, fmt, ##args);		\
 })
+
+static unsigned ratelimit = 10;
 
 /*
  * Print a readable form of a pgprot_t to the seq_file
@@ -207,6 +210,9 @@ static void note_page(struct seq_file *m, struct pg_state *st,
 		unsigned long delta;
 		int width = sizeof(unsigned long) * 2;
 
+		if (st->marker->ratelimit && !ratelimit)
+				goto skip;
+
 		/*
 		 * Now print the actual finished series
 		 */
@@ -222,6 +228,7 @@ static void note_page(struct seq_file *m, struct pg_state *st,
 		pt_dump_cont_printf(m, st->to_dmesg, "%9lu%c ", delta, *unit);
 		printk_prot(m, st->current_prot, st->level, st->to_dmesg);
 
+skip:
 		/*
 		 * We print markers for special areas of address space,
 		 * such as the start of vmalloc space etc.
@@ -236,6 +243,12 @@ static void note_page(struct seq_file *m, struct pg_state *st,
 		st->start_address = st->current_address;
 		st->current_prot = new_prot;
 		st->level = level;
+
+		if (st->marker->ratelimit && ratelimit) {
+			if (ratelimit == 1)
+				pt_dump_seq_printf(m, st->to_dmesg, "...\n");
+			ratelimit--;
+		}
 	}
 }
 
@@ -357,6 +370,7 @@ void ptdump_walk_pgd_level(struct seq_file *m, pgd_t *pgd)
 
 static int ptdump_show(struct seq_file *m, void *v)
 {
+	ratelimit = 10;
 	ptdump_walk_pgd_level(m, NULL);
 	return 0;
 }
