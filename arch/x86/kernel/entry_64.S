@@ -1042,8 +1042,8 @@ restore_args:
 
 irq_return:
 	/*
-	 * Are we returning to the LDT?  Note: in 64-bit mode
-	 * SS:RSP on the exception stack is always valid.
+	 * Are we returning to a stack segment from the LDT?  Note: in
+	 * 64-bit mode SS:RSP on the exception stack is always valid.
 	 */
 	testb $4,(SS-RIP)(%rsp)
 	jnz irq_return_ldt
